@@ -1,15 +1,16 @@
 // ===== 阅读日记前端 =====
-// 这个 JS 做两件事：
-// 1. 展示已有的文章摘要（从 GitHub 仓库的 data/ 目录加载 Markdown）
-// 2. 保存新 URL 到 GitHub 仓库的 data/queue/ 目录（手机粘贴链接用）
 //
-// 可以把它想象成一个"带投递口的展示柜"——
-// 既能看已有内容，也能从手机上往里投新链接。
+// 数据读写全部通过 GitHub API 完成。
+// GitHub Pages 只服务 /docs 目录下的静态文件（HTML/CSS/JS），
+// 仓库中的 /data 目录无法通过相对路径访问。
+// 因此所有数据操作统一走以下两条通道：
+//   读取：GitHub raw URL（公开仓库无需 token）
+//   写入：GitHub REST API（需要 token）
 
-// --- 配置 ---
-const DATA_PATH = '../data';
+// ============================================================
+// 配置
+// ============================================================
 
-// 从 localStorage 读取 GitHub 配置（首次使用需在设置中填写）
 function getConfig() {
   return {
     token: localStorage.getItem('gh_token') || '',
@@ -18,7 +19,27 @@ function getConfig() {
   };
 }
 
+// 拼接 raw 文件 URL（公开仓库免鉴权，加时间戳破缓存）
+function rawUrl(path) {
+  const c = getConfig();
+  return `https://raw.githubusercontent.com/${c.username}/${c.repo}/main/${path}?t=${Date.now()}`;
+}
+
+// 拼接 API URL
+function apiUrl(path) {
+  const c = getConfig();
+  return `https://api.github.com/repos/${c.username}/${c.repo}/contents/${path}`;
+}
+
+// 带 token 的 fetch header
+function authHeaders() {
+  return { 'Authorization': `Bearer ${getConfig().token}` };
+}
+
+// ============================================================
 // 平台图标映射
+// ============================================================
+
 const SOURCE_MAP = {
   'bilibili':    { name: 'B站', class: 'source-bilibili', icon: '📺' },
   'youtube':     { name: 'YouTube', class: 'source-youtube', icon: '▶️' },
@@ -30,7 +51,9 @@ const SOURCE_MAP = {
   'zhihu':       { name: '知乎', class: 'source-zhihu', icon: '💡' },
 };
 
-// --- 工具函数 ---
+// ============================================================
+// 工具函数
+// ============================================================
 
 function getTodayStr() {
   const d = new Date();
@@ -38,10 +61,11 @@ function getTodayStr() {
 }
 
 function formatDateCN(str) {
-  const [y, m, d] = str.split('-');
-  return `${m}月${parseInt(d)}日`;
+  const [, m, d] = str.split('-');
+  return `${parseInt(m)}月${parseInt(d)}日`;
 }
 
+// 解析 Markdown frontmatter
 function parseFrontmatter(text) {
   const match = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   if (!match) return { meta: {}, body: text };
@@ -64,15 +88,17 @@ function getSourceInfo(source) {
   return { name: source, class: 'source-default', icon: '🔗' };
 }
 
-// 根据 URL 猜测来源平台
 function guessSource(url) {
-  for (const [key, info] of Object.entries(SOURCE_MAP)) {
-    if (url.includes(key)) return info;
+  try {
+    for (const [key, info] of Object.entries(SOURCE_MAP)) {
+      if (url.includes(key)) return info;
+    }
+    return { name: new URL(url).hostname, class: 'source-default', icon: '🔗' };
+  } catch {
+    return { name: '网页', class: 'source-default', icon: '🔗' };
   }
-  return { name: new URL(url).hostname, class: 'source-default', icon: '🔗' };
 }
 
-// 显示 Toast 提示
 function showToast(msg) {
   let toast = document.querySelector('.toast');
   if (!toast) {
@@ -85,10 +111,34 @@ function showToast(msg) {
   setTimeout(() => toast.classList.remove('show'), 2000);
 }
 
-// --- 卡片渲染 ---
+// ============================================================
+// 链接预览（Microlink 免费 API）
+// ============================================================
 
+async function fetchLinkPreview(url) {
+  try {
+    const res = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.status === 'success' && json.data) {
+      return {
+        title: json.data.title || '',
+        description: json.data.description || '',
+        image: json.data.image?.url || '',
+      };
+    }
+  } catch {}
+  return null;
+}
+
+// ============================================================
+// 卡片渲染
+// ============================================================
+
+// 已总结文章的卡片
 function renderCard(meta, body) {
   const sourceInfo = getSourceInfo(meta.source);
+
   const coreMatch = body.match(/\*\*核心观点\*\*[：:]\s*(.*)/);
   const core = coreMatch ? coreMatch[1] : '';
 
@@ -97,7 +147,7 @@ function renderCard(meta, body) {
   if (pointsMatch) {
     pointsHtml = pointsMatch[1]
       .split('\n')
-      .filter(l => l.match(/^\d+\./))
+      .filter(l => /^\d+\./.test(l))
       .map(l => `<li>${l.replace(/^\d+\.\s*/, '').trim()}</li>`)
       .join('');
   }
@@ -110,9 +160,7 @@ function renderCard(meta, body) {
   card.innerHTML = `
     <div class="card-header">
       <span class="card-source ${sourceInfo.class}">${sourceInfo.icon} ${sourceInfo.name}</span>
-      <div>
-        <span class="card-date">${meta.date || ''}</span>
-      </div>
+      <span class="card-date">${meta.date || ''}</span>
     </div>
     ${meta.cover ? `<img class="card-cover" src="${meta.cover}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
     <a class="card-title" href="${meta.url || '#'}" target="_blank" rel="noopener">${meta.title || '无标题'}</a>
@@ -126,26 +174,7 @@ function renderCard(meta, body) {
   return card;
 }
 
-// 获取链接预览信息（标题、描述、封面图）
-// 使用免费的 Microlink API 提取网页的 Open Graph 元数据
-async function fetchLinkPreview(url) {
-  try {
-    const res = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.status === 'success' && json.data) {
-      return {
-        title: json.data.title || '',
-        description: json.data.description || '',
-        image: json.data.image?.url || '',
-      };
-    }
-  } catch { /* 预览获取失败不影响保存 */ }
-  return null;
-}
-
-// 渲染待处理 URL 的卡片（还没被 AI 总结的）
-// 包含链接预览（标题+配图）和删除按钮
+// 待处理 URL 的卡片（带预览和删除按钮）
 function renderPendingCard(url, filename, preview) {
   const sourceInfo = guessSource(url);
   const title = (preview && preview.title) ? preview.title : url;
@@ -163,162 +192,194 @@ function renderPendingCard(url, filename, preview) {
     ${(preview && preview.image) ? `<img class="card-cover" src="${preview.image}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
     <a class="card-title" href="${url}" target="_blank" rel="noopener">${title}</a>
     ${(preview && preview.description) ? `<p class="card-summary">${preview.description}</p>` : ''}
-    <span class="card-date">${filename.replace('.txt', '').replace('_', ' ') || ''}</span>
+    <span class="card-date">${filename.replace('.txt', '').replace('_', ' ')}</span>
   `;
 
-  // 删除按钮事件
   card.querySelector('.btn-delete').addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!confirm('确定删除这条记录？')) return;
+    if (!confirm('确定删除？')) return;
     const ok = await deleteQueueFile(filename);
-    if (ok) {
-      card.remove();
-      showToast('已删除');
-    } else {
-      showToast('删除失败');
-    }
+    if (ok) { card.remove(); showToast('已删除'); }
+    else { showToast('删除失败'); }
   });
 
   return card;
 }
 
-// 从 GitHub 删除队列文件
-async function deleteQueueFile(filename) {
-  const config = getConfig();
-  if (!config.token) return false;
-  try {
-    // 先获取文件的 sha
-    const infoRes = await fetch(
-      `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${filename}`,
-      { headers: { 'Authorization': `Bearer ${config.token}` } }
-    );
-    if (!infoRes.ok) return false;
-    const info = await infoRes.json();
+// ============================================================
+// GitHub API 操作
+// ============================================================
 
-    // 删除文件
-    const res = await fetch(
-      `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${filename}`,
-      {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${config.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: `delete: ${filename}`,
-          sha: info.sha,
-        }),
-      }
-    );
+// 保存 URL 到队列
+async function saveUrl(url) {
+  const config = getConfig();
+  if (!config.token) {
+    showToast('请先在设置中填写 GitHub Token');
+    document.getElementById('settings-modal').classList.remove('hidden');
+    return false;
+  }
+
+  const now = new Date();
+  const filename = `${getTodayStr()}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}.txt`;
+  const content = btoa(unescape(encodeURIComponent(url)));
+
+  try {
+    const res = await fetch(apiUrl(`data/queue/${filename}`), {
+      method: 'PUT',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `queue: ${url.slice(0, 50)}`, content }),
+    });
     return res.ok;
   } catch { return false; }
 }
 
-// --- 数据加载 ---
+// 删除队列文件
+async function deleteQueueFile(filename) {
+  const config = getConfig();
+  if (!config.token) return false;
+  try {
+    const infoRes = await fetch(apiUrl(`data/queue/${filename}`), { headers: authHeaders() });
+    if (!infoRes.ok) return false;
+    const { sha } = await infoRes.json();
 
-// 加载指定日期的文章
+    const res = await fetch(apiUrl(`data/queue/${filename}`), {
+      method: 'DELETE',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: `delete: ${filename}`, sha }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+// 保存今日随想到 GitHub
+async function saveDiary(dateStr, text) {
+  const config = getConfig();
+  if (!config.token) { showToast('请先设置 Token'); return false; }
+
+  const path = `data/diary/${dateStr}.txt`;
+  const content = btoa(unescape(encodeURIComponent(text)));
+
+  // 检查文件是否已存在（需要 sha 来更新）
+  let sha = null;
+  try {
+    const existing = await fetch(apiUrl(path), { headers: authHeaders() });
+    if (existing.ok) {
+      const data = await existing.json();
+      sha = data.sha;
+    }
+  } catch {}
+
+  const body = { message: `diary: ${dateStr}`, content };
+  if (sha) body.sha = sha;
+
+  try {
+    const res = await fetch(apiUrl(path), {
+      method: 'PUT',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+// 加载今日随想
+async function loadDiary(dateStr) {
+  try {
+    const res = await fetch(rawUrl(`data/diary/${dateStr}.txt`));
+    if (res.ok) return await res.text();
+  } catch {}
+  return '';
+}
+
+// ============================================================
+// 数据加载
+// ============================================================
+
 async function loadDailyArticles(dateStr) {
   const container = document.getElementById('cards-container');
   const diaryTextarea = document.getElementById('diary-textarea');
+  let hasContent = false;
+  container.innerHTML = '';
 
+  // 1. 加载已总结的文章（从 daily/YYYY-MM-DD.md）
   try {
-    // 加载 daily 文件
-    const res = await fetch(`${DATA_PATH}/daily/${dateStr}.md`);
-    let hasContent = false;
-    container.innerHTML = '';
-
+    const res = await fetch(rawUrl(`data/daily/${dateStr}.md`));
     if (res.ok) {
       const text = await res.text();
+
+      // 提取文章链接，格式：[标题](../topics/分类/文件.md)
       const articleLinks = text.match(/\[.*?\]\((\.\.\/topics\/.*?\.md)\)/g) || [];
-
-      if (articleLinks.length > 0) {
-        for (const linkMatch of articleLinks) {
-          const pathMatch = linkMatch.match(/\((.*?)\)/);
-          if (!pathMatch) continue;
-          const articlePath = pathMatch[1].replace('..', DATA_PATH);
-          try {
-            const r = await fetch(articlePath);
-            if (!r.ok) continue;
-            const { meta, body } = parseFrontmatter(await r.text());
-            container.appendChild(renderCard(meta, body));
-            hasContent = true;
-          } catch { /* 跳过 */ }
-        }
+      for (const linkMatch of articleLinks) {
+        const pathMatch = linkMatch.match(/\((.*?)\)/);
+        if (!pathMatch) continue;
+        // ../topics/X/Y.md → data/topics/X/Y.md
+        const filePath = pathMatch[1].replace('..', 'data');
+        try {
+          const r = await fetch(rawUrl(filePath));
+          if (!r.ok) continue;
+          const { meta, body } = parseFrontmatter(await r.text());
+          container.appendChild(renderCard(meta, body));
+          hasContent = true;
+        } catch {}
       }
-
-      // 加载今日随想
-      const diaryMatch = text.match(/## 今日随想\n\n([\s\S]*?)(?=\n---|\n$|$)/);
-      if (diaryMatch) {
-        const c = diaryMatch[1].trim();
-        diaryTextarea.value = (c && c !== '（在此写下你的想法...）') ? c : '';
-      } else {
-        diaryTextarea.value = '';
-      }
-    } else {
-      diaryTextarea.value = '';
     }
+  } catch {}
 
-    // 如果是今天，还要加载队列中的待处理 URL
-    if (dateStr === getTodayStr()) {
+  // 2. 加载队列中的待处理 URL（仅今日视图）
+  if (dateStr === getTodayStr()) {
+    const config = getConfig();
+    if (config.token) {
       try {
-        const queueRes = await fetch(`${DATA_PATH}/queue/?t=${Date.now()}`);
-        if (queueRes.ok) {
-          // GitHub Pages 目录列表不可用，改用 API
-          const config = getConfig();
-          if (config.token) {
-            const apiRes = await fetch(
-              `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue`,
-              { headers: { 'Authorization': `Bearer ${config.token}` } }
-            );
-            if (apiRes.ok) {
-              const files = await apiRes.json();
-              for (const file of files) {
-                if (!file.name.endsWith('.txt')) continue;
-                const contentRes = await fetch(
-                  `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${file.name}`,
-                  { headers: { 'Authorization': `Bearer ${config.token}`, 'Accept': 'application/vnd.github.raw' } }
-                );
-                if (contentRes.ok) {
-                  const url = (await contentRes.text()).trim();
-                  if (url) {
-                    // 先用 URL 渲染卡片，然后异步获取预览并更新
-                    const pendingCard = renderPendingCard(url, file.name, null);
-                    container.appendChild(pendingCard);
-                    hasContent = true;
-                    // 异步获取链接预览，获取后替换卡片
-                    fetchLinkPreview(url).then(preview => {
-                      if (preview) {
-                        const newCard = renderPendingCard(url, file.name, preview);
-                        pendingCard.replaceWith(newCard);
-                      }
-                    });
+        const apiRes = await fetch(apiUrl('data/queue'), { headers: authHeaders() });
+        if (apiRes.ok) {
+          const files = await apiRes.json();
+          // files 可能是数组（有文件）或对象（空目录/错误）
+          if (Array.isArray(files)) {
+            for (const file of files) {
+              if (!file.name.endsWith('.txt')) continue;
+              try {
+                const contentRes = await fetch(apiUrl(`data/queue/${file.name}`), {
+                  headers: { ...authHeaders(), 'Accept': 'application/vnd.github.raw' },
+                });
+                if (!contentRes.ok) continue;
+                const url = (await contentRes.text()).trim();
+                if (!url) continue;
+
+                const pendingCard = renderPendingCard(url, file.name, null);
+                container.appendChild(pendingCard);
+                hasContent = true;
+
+                // 异步加载预览
+                fetchLinkPreview(url).then(preview => {
+                  if (preview) {
+                    const newCard = renderPendingCard(url, file.name, preview);
+                    pendingCard.replaceWith(newCard);
                   }
-                }
-              }
+                });
+              } catch {}
             }
           }
         }
-      } catch { /* 队列加载失败不影响主体 */ }
+      } catch {}
     }
-
-    if (!hasContent) {
-      container.innerHTML = '<p class="empty-state">还没有收录内容<br>在下方粘贴链接开始</p>';
-    }
-  } catch {
-    container.innerHTML = '<p class="empty-state">加载失败，请刷新重试。</p>';
   }
+
+  if (!hasContent) {
+    container.innerHTML = '<p class="empty-state">还没有收录内容<br>在下方粘贴链接开始</p>';
+  }
+
+  // 3. 加载今日随想（独立文件 data/diary/YYYY-MM-DD.txt）
+  const diaryText = await loadDiary(dateStr);
+  diaryTextarea.value = diaryText;
 }
 
 // 搜索
 async function searchArticles(keyword) {
   const container = document.getElementById('cards-container');
-  if (!keyword.trim()) {
-    loadDailyArticles(getTodayStr());
-    return;
-  }
+  if (!keyword.trim()) { loadDailyArticles(getTodayStr()); return; }
 
   try {
-    const res = await fetch(`${DATA_PATH}/archive.md`);
+    const res = await fetch(rawUrl('data/archive.md'));
     if (!res.ok) { container.innerHTML = '<p class="empty-state">暂无数据。</p>'; return; }
 
     const text = await res.text();
@@ -334,123 +395,80 @@ async function searchArticles(keyword) {
     for (const line of lines) {
       const pathMatch = line.match(/\((.*?\.md)\)/);
       if (!pathMatch) continue;
+      const filePath = pathMatch[1].replace('..', 'data');
       try {
-        const r = await fetch(pathMatch[1].replace('..', DATA_PATH));
+        const r = await fetch(rawUrl(filePath));
         if (!r.ok) continue;
         const { meta, body } = parseFrontmatter(await r.text());
         container.appendChild(renderCard(meta, body));
-      } catch { /* 跳过 */ }
+      } catch {}
+    }
+
+    if (container.children.length === 0) {
+      container.innerHTML = `<p class="empty-state">没有找到「${keyword}」相关内容。</p>`;
     }
   } catch {
     container.innerHTML = '<p class="empty-state">搜索失败。</p>';
   }
 }
 
-// --- 保存 URL 到 GitHub ---
-
-async function saveUrl(url) {
-  const config = getConfig();
-
-  if (!config.token) {
-    showToast('请先在设置中填写 GitHub Token');
-    document.getElementById('settings-modal').classList.remove('hidden');
-    return false;
-  }
-
-  // 用时间戳作为文件名，避免冲突
-  const now = new Date();
-  const filename = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}.txt`;
-
-  // 将 URL 进行 Base64 编码（GitHub API 要求）
-  const content = btoa(unescape(encodeURIComponent(url)));
-
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${filename}`,
-      {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${config.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: `queue: ${url.slice(0, 50)}`,
-          content: content,
-        }),
-      }
-    );
-
-    if (res.ok) {
-      return true;
-    } else {
-      const err = await res.json();
-      console.error('GitHub API error:', err);
-      return false;
-    }
-  } catch (e) {
-    console.error('Save failed:', e);
-    return false;
-  }
-}
-
-// --- 侧边栏日期列表 ---
+// ============================================================
+// 侧边栏日期列表
+// ============================================================
 
 async function loadDateList() {
   const dateList = document.getElementById('date-list');
-  const config = getConfig();
+  dateList.innerHTML = '';
 
-  // 先添加"今日"
+  // 固定添加"今日"
   const todayItem = document.createElement('div');
   todayItem.className = 'date-item active';
-  todayItem.innerHTML = `<span class="date-item-label">今日</span>`;
+  todayItem.innerHTML = '<span class="date-item-label">今日</span>';
   todayItem.addEventListener('click', () => selectDate(getTodayStr(), todayItem));
   dateList.appendChild(todayItem);
 
-  // 尝试从 GitHub API 获取 daily 目录下的文件列表
+  // 从 API 获取历史日期
+  const config = getConfig();
   if (config.token) {
     try {
-      const res = await fetch(
-        `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/daily`,
-        { headers: { 'Authorization': `Bearer ${config.token}` } }
-      );
+      const res = await fetch(apiUrl('data/daily'), { headers: authHeaders() });
       if (res.ok) {
         const files = await res.json();
-        const dates = files
-          .map(f => f.name.replace('.md', ''))
-          .filter(n => /^\d{4}-\d{2}-\d{2}$/.test(n))
-          .sort()
-          .reverse();
-
-        dates.forEach(dateStr => {
-          if (dateStr === getTodayStr()) return; // 今日已添加
-          const item = document.createElement('div');
-          item.className = 'date-item';
-          item.innerHTML = `<span class="date-item-label">${formatDateCN(dateStr)}</span>`;
-          item.addEventListener('click', () => selectDate(dateStr, item));
-          dateList.appendChild(item);
-        });
+        if (Array.isArray(files)) {
+          files
+            .map(f => f.name.replace('.md', ''))
+            .filter(n => /^\d{4}-\d{2}-\d{2}$/.test(n))
+            .sort()
+            .reverse()
+            .forEach(dateStr => {
+              if (dateStr === getTodayStr()) return;
+              const item = document.createElement('div');
+              item.className = 'date-item';
+              item.innerHTML = `<span class="date-item-label">${formatDateCN(dateStr)}</span>`;
+              item.addEventListener('click', () => selectDate(dateStr, item));
+              dateList.appendChild(item);
+            });
+        }
       }
-    } catch { /* 降级：只显示今日 */ }
+    } catch {}
   }
 }
 
 function selectDate(dateStr, element) {
-  // 更新侧边栏选中状态
   document.querySelectorAll('.date-item').forEach(el => el.classList.remove('active'));
   element.classList.add('active');
-
-  // 更新顶栏标题
   document.getElementById('current-date-title').textContent =
     dateStr === getTodayStr() ? '今日' : formatDateCN(dateStr);
-
-  // 加载对应日期的内容
   loadDailyArticles(dateStr);
-
-  // 手机端关闭侧边栏
   closeSidebar();
+
+  // 记住当前选择的日期，供日记保存使用
+  document.getElementById('diary-textarea').dataset.date = dateStr;
 }
 
-// --- 侧边栏开关 ---
+// ============================================================
+// 侧边栏开关
+// ============================================================
 
 function openSidebar() {
   document.getElementById('sidebar').classList.add('open');
@@ -462,7 +480,9 @@ function closeSidebar() {
   document.getElementById('overlay').classList.remove('show');
 }
 
-// --- 初始化 ---
+// ============================================================
+// 初始化
+// ============================================================
 
 document.addEventListener('DOMContentLoaded', () => {
   const urlInput = document.getElementById('url-input');
@@ -477,17 +497,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingsModal = document.getElementById('settings-modal');
   const btnSaveSettings = document.getElementById('btn-save-settings');
   const btnCloseSettings = document.getElementById('btn-close-settings');
+  const diaryTextarea = document.getElementById('diary-textarea');
+
+  // 记住当前日期
+  diaryTextarea.dataset.date = getTodayStr();
 
   // 加载今日内容
   loadDailyArticles(getTodayStr());
   loadDateList();
 
-  // 保存 URL
+  // --- 保存 URL ---
   btnSave.addEventListener('click', async () => {
     const url = urlInput.value.trim();
     if (!url) return;
-
-    // 简单校验是否像 URL
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       showToast('请输入有效链接');
       return;
@@ -500,15 +522,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ok) {
       showToast('已保存 ✓');
       urlInput.value = '';
-      // 立即在页面上添加一张待处理卡片
+
+      // 立即在页面上显示卡片
       const container = document.getElementById('cards-container');
       const emptyState = container.querySelector('.empty-state');
       if (emptyState) emptyState.remove();
+
       const now = new Date();
       const fn = `${getTodayStr()}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}.txt`;
       const pendingCard = renderPendingCard(url, fn, null);
       container.appendChild(pendingCard);
-      // 异步获取预览
+
       fetchLinkPreview(url).then(preview => {
         if (preview) pendingCard.replaceWith(renderPendingCard(url, fn, preview));
       });
@@ -520,16 +544,40 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSave.disabled = false;
   });
 
-  // 回车也能保存
   urlInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') btnSave.click();
   });
 
-  // 侧边栏
+  // --- 今日随想自动保存 ---
+  // 失焦时自动保存，避免每次按键都调 API
+  let diaryTimer = null;
+  diaryTextarea.addEventListener('input', () => {
+    clearTimeout(diaryTimer);
+    diaryTimer = setTimeout(async () => {
+      const dateStr = diaryTextarea.dataset.date || getTodayStr();
+      const text = diaryTextarea.value.trim();
+      if (text) {
+        const ok = await saveDiary(dateStr, text);
+        if (ok) showToast('随想已保存');
+      }
+    }, 2000); // 停止输入 2 秒后自动保存
+  });
+
+  diaryTextarea.addEventListener('blur', async () => {
+    clearTimeout(diaryTimer);
+    const dateStr = diaryTextarea.dataset.date || getTodayStr();
+    const text = diaryTextarea.value.trim();
+    if (text) {
+      const ok = await saveDiary(dateStr, text);
+      if (ok) showToast('随想已保存');
+    }
+  });
+
+  // --- 侧边栏 ---
   btnMenu.addEventListener('click', openSidebar);
   overlay.addEventListener('click', closeSidebar);
 
-  // 搜索
+  // --- 搜索 ---
   btnSearch.addEventListener('click', () => {
     searchBar.classList.toggle('hidden');
     if (!searchBar.classList.contains('hidden')) searchInput.focus();
@@ -545,7 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') searchArticles(e.target.value);
   });
 
-  // 设置弹窗
+  // --- 设置 ---
   btnSettings.addEventListener('click', () => {
     const config = getConfig();
     document.getElementById('token-input').value = config.token;
@@ -561,6 +609,8 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('gh_repo', document.getElementById('repo-input').value.trim());
     settingsModal.classList.add('hidden');
     showToast('设置已保存');
+    // 重新加载数据
+    loadDailyArticles(getTodayStr());
     loadDateList();
   });
 
