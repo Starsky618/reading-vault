@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- PWA 支持：添加到主屏幕后全屏显示，无地址栏 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="阅读日记">
+  <title>阅读日记</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 顶部导航 -->
+  <header class="header">
+    <h1 class="header-title">阅读日记</h1>
+    <div class="header-actions">
+      <input type="date" id="date-picker" class="date-picker">
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="搜索..." class="search-input">
+      </div>
+    </div>
+  </header>
+
+  <!-- 主内容区 -->
+  <main class="main">
+    <!-- 卡片容器 -->
+    <section id="cards-container" class="cards-container">
+      <p class="empty-state">今天还没有收录内容，去发现一些好文章吧。</p>
+    </section>
+
+    <!-- 今日随想 -->
+    <section class="diary-section">
+      <h2 class="diary-title">今日随想</h2>
+      <textarea
+        id="diary-textarea"
+        class="diary-textarea"
+        placeholder="写下你的想法..."
+      ></textarea>
+    </section>
+  </main>
+
+  <!-- 底部命令提示 -->
+  <footer class="footer">
+    <span class="footer-hint">命令：/收录 · /今日 · /回顾 · /搜索 · /分类</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
