@@ -2,48 +2,95 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- PWA 支持：添加到主屏幕后全屏显示，无地址栏 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="阅读日记">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="日记">
   <title>阅读日记</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- 顶部导航 -->
-  <header class="header">
-    <h1 class="header-title">阅读日记</h1>
-    <div class="header-actions">
-      <input type="date" id="date-picker" class="date-picker">
-      <div class="search-box">
-        <input type="text" id="search-input" placeholder="搜索..." class="search-input">
-      </div>
+  <!-- 侧边栏（日期列表，类似 Bear/ChatGPT 的对话列表） -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <h2>阅读日记</h2>
     </div>
-  </header>
+    <nav id="date-list" class="date-list">
+      <!-- JS 动态渲染日期列表 -->
+    </nav>
+    <div class="sidebar-footer">
+      <button id="btn-settings" class="sidebar-btn">设置</button>
+    </div>
+  </aside>
+
+  <!-- 遮罩层（手机端点击侧边栏外关闭） -->
+  <div id="overlay" class="overlay"></div>
 
   <!-- 主内容区 -->
-  <main class="main">
-    <!-- 卡片容器 -->
-    <section id="cards-container" class="cards-container">
-      <p class="empty-state">今天还没有收录内容，去发现一些好文章吧。</p>
-    </section>
+  <div class="content">
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <button id="btn-menu" class="btn-icon">☰</button>
+      <span id="current-date-title" class="topbar-title">今日</span>
+      <button id="btn-search" class="btn-icon">🔍</button>
+    </header>
+
+    <!-- 搜索栏（默认隐藏） -->
+    <div id="search-bar" class="search-bar hidden">
+      <input type="text" id="search-input" placeholder="搜索文章标题或关键词..." class="search-field">
+      <button id="btn-search-close" class="btn-icon">✕</button>
+    </div>
+
+    <!-- 卡片滚动区 -->
+    <main id="cards-container" class="cards-container">
+      <p class="empty-state">还没有收录内容<br>在下方粘贴链接开始</p>
+    </main>
 
     <!-- 今日随想 -->
-    <section class="diary-section">
-      <h2 class="diary-title">今日随想</h2>
+    <section id="diary-section" class="diary-section">
       <textarea
         id="diary-textarea"
         class="diary-textarea"
-        placeholder="写下你的想法..."
+        placeholder="今日随想..."
+        rows="2"
       ></textarea>
     </section>
-  </main>
 
-  <!-- 底部命令提示 -->
-  <footer class="footer">
-    <span class="footer-hint">命令：/收录 · /今日 · /回顾 · /搜索 · /分类</span>
-  </footer>
+    <!-- 底部输入栏（类似 ChatGPT 的消息输入框） -->
+    <footer class="input-bar">
+      <input
+        type="url"
+        id="url-input"
+        class="url-input"
+        placeholder="粘贴文章链接..."
+        autocomplete="off"
+      >
+      <button id="btn-save" class="btn-save">保存</button>
+    </footer>
+
+    <!-- 底部命令提示 -->
+    <div class="cmd-hint">
+      <span>/收录 · /今日 · /回顾 · /搜索 · /分类</span>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>设置</h3>
+      <label>GitHub Token</label>
+      <input type="password" id="token-input" class="settings-input" placeholder="ghp_xxxx...">
+      <p class="settings-hint">用于保存数据到 GitHub。<a href="https://github.com/settings/tokens?type=beta" target="_blank">创建 Token</a></p>
+      <label>GitHub 用户名</label>
+      <input type="text" id="username-input" class="settings-input" placeholder="Starsky618" value="Starsky618">
+      <label>仓库名</label>
+      <input type="text" id="repo-input" class="settings-input" placeholder="reading-vault" value="reading-vault">
+      <div class="modal-actions">
+        <button id="btn-save-settings" class="btn-primary">保存设置</button>
+        <button id="btn-close-settings" class="btn-secondary">取消</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
