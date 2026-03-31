@@ -286,6 +286,22 @@ body {
   border-radius: 10px;
 }
 
+.btn-delete {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+
+.btn-delete:hover {
+  color: #ff3b30;
+  background: #fff0f0;
+}
+
 /* --- 今日随想 --- */
 .diary-section {
   padding: 0 16px 8px;

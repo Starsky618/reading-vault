@@ -110,7 +110,9 @@ function renderCard(meta, body) {
   card.innerHTML = `
     <div class="card-header">
       <span class="card-source ${sourceInfo.class}">${sourceInfo.icon} ${sourceInfo.name}</span>
-      <span class="card-date">${meta.date || ''}</span>
+      <div>
+        <span class="card-date">${meta.date || ''}</span>
+      </div>
     </div>
     ${meta.cover ? `<img class="card-cover" src="${meta.cover}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
     <a class="card-title" href="${meta.url || '#'}" target="_blank" rel="noopener">${meta.title || '无标题'}</a>
@@ -124,20 +126,92 @@ function renderCard(meta, body) {
   return card;
 }
 
+// 获取链接预览信息（标题、描述、封面图）
+// 使用免费的 Microlink API 提取网页的 Open Graph 元数据
+async function fetchLinkPreview(url) {
+  try {
+    const res = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (json.status === 'success' && json.data) {
+      return {
+        title: json.data.title || '',
+        description: json.data.description || '',
+        image: json.data.image?.url || '',
+      };
+    }
+  } catch { /* 预览获取失败不影响保存 */ }
+  return null;
+}
+
 // 渲染待处理 URL 的卡片（还没被 AI 总结的）
-function renderPendingCard(url, added) {
+// 包含链接预览（标题+配图）和删除按钮
+function renderPendingCard(url, filename, preview) {
   const sourceInfo = guessSource(url);
+  const title = (preview && preview.title) ? preview.title : url;
   const card = document.createElement('div');
   card.className = 'card card-pending';
+  card.dataset.filename = filename;
   card.innerHTML = `
     <div class="card-header">
       <span class="card-source ${sourceInfo.class}">${sourceInfo.icon} ${sourceInfo.name}</span>
-      <span class="pending-badge">待总结</span>
+      <div>
+        <span class="pending-badge">待总结</span>
+        <button class="btn-delete" title="删除">✕</button>
+      </div>
     </div>
-    <a class="card-title" href="${url}" target="_blank" rel="noopener">${url}</a>
-    <span class="card-date">${added || ''}</span>
+    ${(preview && preview.image) ? `<img class="card-cover" src="${preview.image}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+    <a class="card-title" href="${url}" target="_blank" rel="noopener">${title}</a>
+    ${(preview && preview.description) ? `<p class="card-summary">${preview.description}</p>` : ''}
+    <span class="card-date">${filename.replace('.txt', '').replace('_', ' ') || ''}</span>
   `;
+
+  // 删除按钮事件
+  card.querySelector('.btn-delete').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirm('确定删除这条记录？')) return;
+    const ok = await deleteQueueFile(filename);
+    if (ok) {
+      card.remove();
+      showToast('已删除');
+    } else {
+      showToast('删除失败');
+    }
+  });
+
   return card;
+}
+
+// 从 GitHub 删除队列文件
+async function deleteQueueFile(filename) {
+  const config = getConfig();
+  if (!config.token) return false;
+  try {
+    // 先获取文件的 sha
+    const infoRes = await fetch(
+      `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${filename}`,
+      { headers: { 'Authorization': `Bearer ${config.token}` } }
+    );
+    if (!infoRes.ok) return false;
+    const info = await infoRes.json();
+
+    // 删除文件
+    const res = await fetch(
+      `https://api.github.com/repos/${config.username}/${config.repo}/contents/data/queue/${filename}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: `delete: ${filename}`,
+          sha: info.sha,
+        }),
+      }
+    );
+    return res.ok;
+  } catch { return false; }
 }
 
 // --- 数据加载 ---
@@ -207,8 +281,17 @@ async function loadDailyArticles(dateStr) {
                 if (contentRes.ok) {
                   const url = (await contentRes.text()).trim();
                   if (url) {
-                    container.appendChild(renderPendingCard(url, file.name.replace('.txt', '')));
+                    // 先用 URL 渲染卡片，然后异步获取预览并更新
+                    const pendingCard = renderPendingCard(url, file.name, null);
+                    container.appendChild(pendingCard);
                     hasContent = true;
+                    // 异步获取链接预览，获取后替换卡片
+                    fetchLinkPreview(url).then(preview => {
+                      if (preview) {
+                        const newCard = renderPendingCard(url, file.name, preview);
+                        pendingCard.replaceWith(newCard);
+                      }
+                    });
                   }
                 }
               }
@@ -417,8 +500,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ok) {
       showToast('已保存 ✓');
       urlInput.value = '';
-      // 刷新显示
-      loadDailyArticles(getTodayStr());
+      // 立即在页面上添加一张待处理卡片
+      const container = document.getElementById('cards-container');
+      const emptyState = container.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+      const now = new Date();
+      const fn = `${getTodayStr()}_${String(now.getHours()).padStart(2,'0')}-${String(now.getMinutes()).padStart(2,'0')}-${String(now.getSeconds()).padStart(2,'0')}.txt`;
+      const pendingCard = renderPendingCard(url, fn, null);
+      container.appendChild(pendingCard);
+      // 异步获取预览
+      fetchLinkPreview(url).then(preview => {
+        if (preview) pendingCard.replaceWith(renderPendingCard(url, fn, preview));
+      });
     } else {
       showToast('保存失败，请检查设置');
     }
